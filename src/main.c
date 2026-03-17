@@ -9,10 +9,11 @@
 
 #include "pin_config.h"
 #include "drive_controller.h"
+#include "wifi_ap.h"
+#include "web_server.h"
 
 static const char *TAG = "main";
 
-// Status LED state
 static drive_controller_t s_drive;
 
 // ---------------------------------------------------------------------------
@@ -98,14 +99,29 @@ void app_main(void)
             vTaskDelay(pdMS_TO_TICKS(100));
         }
     }
+    ESP_LOGI(TAG, "Drive controller ready");
 
-    ESP_LOGI(TAG, "Drive controller ready — idle mode");
+    // Start WiFi AP
+    ESP_LOGI(TAG, "Starting WiFi AP...");
+    ret = wifi_ap_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "WiFi AP init FAILED: %s", esp_err_to_name(ret));
+    }
+
+    // Start web server
+    ESP_LOGI(TAG, "Starting web server...");
+    ret = web_server_init(&s_drive);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Web server init FAILED: %s", esp_err_to_name(ret));
+    }
 
     // Start status LED task
     xTaskCreate(status_led_task, "status_led", 2048, &s_drive, 2, NULL);
 
     // Start the closed-loop control task
     drive_controller_start(&s_drive);
+
+    ESP_LOGI(TAG, "System ready — dashboard at http://192.168.4.1");
 
     // Main loop — periodic status logging
     while (1) {
