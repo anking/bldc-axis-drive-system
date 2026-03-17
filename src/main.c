@@ -19,14 +19,15 @@ static drive_controller_t g_drive = {0};
 static void status_led_init(void)
 {
     gpio_config_t conf = {
-        .pin_bit_mask = (1ULL << LED_GPIO_STATUS),
+        .pin_bit_mask = (1ULL << LED_GPIO_1) | (1ULL << LED_GPIO_2),
         .mode         = GPIO_MODE_OUTPUT,
         .pull_up_en   = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type    = GPIO_INTR_DISABLE,
     };
     gpio_config(&conf);
-    gpio_set_level(LED_GPIO_STATUS, 0);
+    gpio_set_level(LED_GPIO_1, 0);
+    gpio_set_level(LED_GPIO_2, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -35,11 +36,11 @@ static void status_led_init(void)
 void app_main(void)
 {
     ESP_LOGI(TAG, "=== BLDC Axis Drive System v0.1.0 ===");
-    ESP_LOGI(TAG, "4x AMT49413 + ESP32 | PI closed-loop RPM control");
+    ESP_LOGI(TAG, "2x AMT49413 + ESP32-WROOM-32E | PI closed-loop RPM control");
 
-    // Init status LED
+    // Init status LEDs
     status_led_init();
-    gpio_set_level(LED_GPIO_STATUS, 1);
+    gpio_set_level(LED_GPIO_1, 1);
 
     // Initialize drive system
     esp_err_t ret = drive_controller_init(&g_drive);
@@ -66,20 +67,18 @@ void app_main(void)
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(2000));
 
-        ESP_LOGI(TAG, "RPM: FL=%.0f  FR=%.0f  RL=%.0f  RR=%.0f",
+        ESP_LOGI(TAG, "RPM: M1=%.0f  M2=%.0f",
                  drive_controller_get_rpm(&g_drive, 0),
-                 drive_controller_get_rpm(&g_drive, 1),
-                 drive_controller_get_rpm(&g_drive, 2),
-                 drive_controller_get_rpm(&g_drive, 3));
+                 drive_controller_get_rpm(&g_drive, 1));
 
         if (drive_controller_is_stalled(&g_drive)) {
             ESP_LOGW(TAG, "*** STALL CONDITION DETECTED ***");
             // In production: decide whether to retry, reduce load, or shut down
         }
 
-        // Toggle LED as heartbeat
+        // Toggle LED1 as heartbeat
         static int led_state = 0;
         led_state = !led_state;
-        gpio_set_level(LED_GPIO_STATUS, led_state);
+        gpio_set_level(LED_GPIO_1, led_state);
     }
 }

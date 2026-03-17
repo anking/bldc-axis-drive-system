@@ -7,17 +7,15 @@
 
 static const char *TAG = "drive_ctrl";
 
-// Motor configurations: {pwm_gpio, dir_gpio, brake_gpio, ledc_channel, ledc_timer}
+// Motor configurations: {pwm_gpio, dir_gpio, brake_gpio, coast_gpio, ledc_channel, ledc_timer}
 static const motor_driver_config_t s_motor_configs[MOTOR_COUNT] = {
-    { M1_GPIO_PWM, M1_GPIO_DIR, M1_GPIO_BRAKE, 0, 0 },  // FL - timer 0
-    { M2_GPIO_PWM, M2_GPIO_DIR, M2_GPIO_BRAKE, 1, 0 },  // FR - timer 0
-    { M3_GPIO_PWM, M3_GPIO_DIR, M3_GPIO_BRAKE, 2, 1 },  // RL - timer 1
-    { M4_GPIO_PWM, M4_GPIO_DIR, M4_GPIO_BRAKE, 3, 1 },  // RR - timer 1
+    { M1_GPIO_PWM, M1_GPIO_DIR, M1_GPIO_BRAKE, M1_GPIO_COAST, 0, 0 },  // M1 - timer 0
+    { M2_GPIO_PWM, M2_GPIO_DIR, M2_GPIO_BRAKE, M2_GPIO_COAST, 1, 0 },  // M2 - timer 0
 };
 
 // TACHO GPIOs indexed by motor
 static const int s_tacho_gpios[MOTOR_COUNT] = {
-    M1_GPIO_TACHO, M2_GPIO_TACHO, M3_GPIO_TACHO, M4_GPIO_TACHO
+    M1_GPIO_TACHO, M2_GPIO_TACHO
 };
 
 static TaskHandle_t s_control_task = NULL;
@@ -133,9 +131,9 @@ esp_err_t drive_controller_start(drive_controller_t *dc)
 
     dc->running = true;
 
-    // Release brakes on all motors
+    // Enable outputs on all motors (exit coast, release brake)
     for (int i = 0; i < MOTOR_COUNT; i++) {
-        motor_driver_coast(&dc->axes[i].motor);
+        motor_driver_run(&dc->axes[i].motor);
     }
 
     BaseType_t ret = xTaskCreatePinnedToCore(
@@ -187,10 +185,8 @@ void drive_controller_set_rpm(drive_controller_t *dc, float rpm)
 
 void drive_controller_set_differential(drive_controller_t *dc, float left_rpm, float right_rpm)
 {
-    dc->axes[0].target_rpm = left_rpm;   // FL
-    dc->axes[1].target_rpm = right_rpm;  // FR
-    dc->axes[2].target_rpm = left_rpm;   // RL
-    dc->axes[3].target_rpm = right_rpm;  // RR
+    dc->axes[0].target_rpm = left_rpm;   // M1
+    dc->axes[1].target_rpm = right_rpm;  // M2
 }
 
 void drive_controller_set_direction(drive_controller_t *dc, motor_dir_t dir)
