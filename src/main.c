@@ -118,10 +118,10 @@ void app_main(void)
     // Start status LED task
     xTaskCreate(status_led_task, "status_led", 2048, &s_drive, 2, NULL);
 
-    // Start the closed-loop control task
-    drive_controller_start(&s_drive);
+    // Don't auto-start drive — boot in coast/idle, use dashboard to start
+    // drive_controller_start(&s_drive);
 
-    ESP_LOGI(TAG, "System ready — dashboard at http://192.168.4.1");
+    ESP_LOGI(TAG, "System ready — dashboard at http://192.168.4.1 (motor idle, use Start button)");
 
     // Main loop — periodic status logging
     while (1) {

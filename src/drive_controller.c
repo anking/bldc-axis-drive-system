@@ -18,9 +18,29 @@ static const int s_tacho_gpios[MOTOR_COUNT] = {
 };
 
 static TaskHandle_t s_control_task = NULL;
+static TaskHandle_t s_tacho_task = NULL;
 
 // ---------------------------------------------------------------------------
-// Control loop task
+// Tacho monitoring task — always runs, regardless of motor state
+// ---------------------------------------------------------------------------
+static void tacho_monitor_task(void *arg)
+{
+    drive_controller_t *dc = (drive_controller_t *)arg;
+    TickType_t last_wake = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(DRIVE_LOOP_PERIOD_MS);
+
+    ESP_LOGI(TAG, "Tacho monitor started (%d ms period)", DRIVE_LOOP_PERIOD_MS);
+
+    while (1) {
+        for (int i = 0; i < MOTOR_COUNT; i++) {
+            tacho_update_rpm(&dc->axes[i].tacho);
+        }
+        vTaskDelayUntil(&last_wake, period);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Control loop task — only runs when dc->running
 // ---------------------------------------------------------------------------
 static void control_loop_task(void *arg)
 {
@@ -34,8 +54,6 @@ static void control_loop_task(void *arg)
         for (int i = 0; i < MOTOR_COUNT; i++) {
             drive_axis_t *axis = &dc->axes[i];
 
-            // Update RPM measurement
-            tacho_update_rpm(&axis->tacho);
             float measured_rpm = tacho_get_rpm(&axis->tacho);
 
             // Run PI controller
@@ -118,6 +136,17 @@ esp_err_t drive_controller_init(drive_controller_t *dc)
 
     dc->initialized = true;
     dc->running = false;
+
+    // Start tacho monitoring task — always runs so RPMs are available even when motor is idle
+    xTaskCreatePinnedToCore(
+        tacho_monitor_task,
+        "tacho_mon",
+        2048,
+        dc,
+        4,                  // Priority 4
+        &s_tacho_task,
+        1                   // Pin to core 1
+    );
 
     ESP_LOGI(TAG, "Drive controller initialized (%d motors)", MOTOR_COUNT);
     return ESP_OK;

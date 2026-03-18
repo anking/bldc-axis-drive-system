@@ -206,8 +206,13 @@ const char *motor_driver_read_faults(motor_driver_t *motor)
     motor->ff1 = gpio_get_level(motor->config.gpio_ff1);
     motor->ff2 = gpio_get_level(motor->config.gpio_ff2);
 
-    if (motor->ff1 && motor->ff2)   return "OK";
-    if (!motor->ff1 && motor->ff2)  return "SHORT/OC";
-    if (motor->ff1 && !motor->ff2)  return "OPEN/UV";
-    return "OVERTEMP";
+    // AMT49413 Fault Action Table (from datasheet):
+    //   FF1=0 FF2=0 → Undervoltage / Overtemperature / Logic fault
+    //   FF1=1 FF2=0 → Short to GND / Short to supply / Shorted winding
+    //   FF1=0 FF2=1 → Low load current (open/disconnected motor)
+    //   FF1=1 FF2=1 → No fault
+    if (motor->ff1 && motor->ff2)    return "OK";
+    if (motor->ff1 && !motor->ff2)   return "SHORT (GND/supply/winding)";
+    if (!motor->ff1 && motor->ff2)   return "LOW LOAD (open motor)";
+    return "UNDERVOLT/OVERTEMP/LOGIC";
 }
