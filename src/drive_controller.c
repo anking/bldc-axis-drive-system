@@ -10,12 +10,11 @@ static const char *TAG = "drive_ctrl";
 // Motor configurations: {pwm, dir, brake, coast, ff1, ff2, ledc_ch, ledc_timer}
 static const motor_driver_config_t s_motor_configs[MOTOR_COUNT] = {
     { M1_GPIO_PWM, M1_GPIO_DIR, M1_GPIO_BRAKE, M1_GPIO_COAST, M1_GPIO_FF1, M1_GPIO_FF2, 0, 0 },
-    { M2_GPIO_PWM, M2_GPIO_DIR, M2_GPIO_BRAKE, M2_GPIO_COAST, M2_GPIO_FF1, M2_GPIO_FF2, 1, 0 },
 };
 
 // TACHO GPIOs indexed by motor
 static const int s_tacho_gpios[MOTOR_COUNT] = {
-    M1_GPIO_TACHO, M2_GPIO_TACHO
+    M1_GPIO_TACHO,
 };
 
 static TaskHandle_t s_control_task = NULL;
@@ -181,12 +180,6 @@ void drive_controller_set_rpm(drive_controller_t *dc, float rpm)
     for (int i = 0; i < MOTOR_COUNT; i++) {
         dc->axes[i].target_rpm = rpm;
     }
-}
-
-void drive_controller_set_differential(drive_controller_t *dc, float left_rpm, float right_rpm)
-{
-    dc->axes[0].target_rpm = left_rpm;   // M1
-    dc->axes[1].target_rpm = right_rpm;  // M2
 }
 
 void drive_controller_set_direction(drive_controller_t *dc, motor_dir_t dir)

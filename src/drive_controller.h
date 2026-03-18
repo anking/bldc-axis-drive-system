@@ -1,6 +1,7 @@
 #pragma once
 
 #include "esp_err.h"
+#include "pin_config.h"
 #include "motor_driver.h"
 #include "tacho.h"
 #include "pi_controller.h"
@@ -32,7 +33,7 @@ typedef struct {
 } drive_axis_t;
 
 typedef struct {
-    drive_axis_t axes[4];   // FL, FR, RL, RR
+    drive_axis_t axes[MOTOR_COUNT];
     bool initialized;
     bool running;
 } drive_controller_t;

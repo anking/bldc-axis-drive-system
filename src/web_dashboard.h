@@ -101,8 +101,7 @@ canvas{width:100%;height:200px;background:#12141c;border-radius:6px;border:1px s
 <div class="card" style="margin-bottom:12px">
  <h2>Controls</h2>
  <div class="row">
-  <label style="display:inline;margin-right:4px">Target:</label>
-  <select id="ctrl-motor"><option value="0" selected>Motor 0</option><option value="all">All Motors</option></select>
+  <label style="display:inline;margin-right:4px">Target RPM:</label>
   <input type="number" id="ctrl-rpm" value="0" min="0" max="2000" step="10" placeholder="RPM">
   <button class="btn-go" onclick="cmdSet()">Set RPM</button>
  </div>
@@ -145,10 +144,9 @@ function fmtTime(ms){
 function initMotorCards(n){
  if(motorCount===n)return;
  motorCount=n;
- let mc=$('motors'), sel=$('ctrl-motor');
- mc.innerHTML=''; sel.innerHTML='<option value="all">All Motors</option>';
+ let mc=$('motors');
+ mc.innerHTML='';
  for(let i=0;i<n;i++){
-  sel.innerHTML+='<option value="'+i+'">Motor '+i+'</option>';
   let c=document.createElement('div');
   c.className='card'; c.id='m'+i;
   c.innerHTML='<h2>Motor '+i+' <span class="tag tag-idle" id="m'+i+'-tag">IDLE</span></h2>'
@@ -263,29 +261,18 @@ async function poll(){
 }
 
 function cmd(ep){
- let m=$('ctrl-motor').value;
- let q=m!=='all'?'?motor='+m:'';
- fetch('/api/'+ep+q);
+ fetch('/api/'+ep+'?motor=0');
 }
 function cmdSet(){
- let m=$('ctrl-motor').value;
  let rpm=$('ctrl-rpm').value;
- let q='?rpm='+rpm;
- if(m!=='all')q+='&motor='+m;
- fetch('/api/set'+q);
+ fetch('/api/set?rpm='+rpm+'&motor=0');
 }
 function cmdDuty(){
- let m=$('ctrl-motor').value;
  let d=$('ctrl-duty').value;
- let q='?duty='+d;
- if(m!=='all')q+='&motor='+m;
- fetch('/api/duty'+q);
+ fetch('/api/duty?duty='+d+'&motor=0');
 }
 function cmdDir(d){
- let m=$('ctrl-motor').value;
- let q='?dir='+d;
- if(m!=='all')q+='&motor='+m;
- fetch('/api/dir'+q);
+ fetch('/api/dir?dir='+d+'&motor=0');
 }
 
 // Handle chart resize

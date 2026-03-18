@@ -125,9 +125,8 @@ void app_main(void)
 
     // Main loop — periodic status logging
     while (1) {
-        ESP_LOGI(TAG, "M1: %.1f RPM  M2: %.1f RPM  heap=%lu  %s",
+        ESP_LOGI(TAG, "M0: %.1f RPM  heap=%lu  %s",
                  drive_controller_get_rpm(&s_drive, 0),
-                 drive_controller_get_rpm(&s_drive, 1),
                  (unsigned long)heap_caps_get_free_size(MALLOC_CAP_DEFAULT),
                  drive_controller_is_stalled(&s_drive) ? "STALL!" : "OK");
 

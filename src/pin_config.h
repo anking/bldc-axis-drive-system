@@ -33,4 +33,4 @@
 #define LED_GPIO_2          15      // NET_LED2 → IO15
 
 // --- Motors on this board ---
-#define MOTOR_COUNT         2
+#define MOTOR_COUNT         1       // Only M1 active (M2 driver not populated)
