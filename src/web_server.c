@@ -1,5 +1,6 @@
 #include "web_server.h"
 #include "web_dashboard.h"
+#include "wifi_ap.h"
 #include "pin_config.h"
 
 #include <string.h>
@@ -13,6 +14,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 
 static const char *TAG = "web_srv";
 
@@ -104,6 +106,7 @@ static esp_err_t handler_status(httpd_req_t *req)
     for (int i = 0; i < MOTOR_COUNT; i++) {
         drive_axis_t *ax = &s_dc->axes[i];
         if (i > 0) pos += snprintf(json + pos, sizeof(json) - pos, ",");
+        const char *fault = motor_driver_read_faults(&ax->motor);
         pos += snprintf(json + pos, sizeof(json) - pos,
             "{\"id\":%d,"
             "\"rpm\":%.1f,"
@@ -112,7 +115,9 @@ static esp_err_t handler_status(httpd_req_t *req)
             "\"dir\":\"%s\","
             "\"stalled\":%s,"
             "\"braking\":%s,"
-            "\"coasting\":%s}",
+            "\"coasting\":%s,"
+            "\"ff1\":%d,\"ff2\":%d,"
+            "\"fault\":\"%s\"}",
             i,
             tacho_get_rpm(&ax->tacho),
             ax->target_rpm,
@@ -120,7 +125,9 @@ static esp_err_t handler_status(httpd_req_t *req)
             ax->motor.direction == MOTOR_DIR_FORWARD ? "fwd" : "rev",
             ax->stalled ? "true" : "false",
             ax->motor.braking ? "true" : "false",
-            ax->motor.coasting ? "true" : "false");
+            ax->motor.coasting ? "true" : "false",
+            ax->motor.ff1, ax->motor.ff2,
+            fault);
     }
 
     pos += snprintf(json + pos, sizeof(json) - pos, "]}");
@@ -184,6 +191,38 @@ static esp_err_t handler_set_dir(httpd_req_t *req)
     xSemaphoreGive(s_cmd_mutex);
 
     return send_ok(req, "direction set");
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/duty?duty=<0-100>&motor=<0|1|all>  — raw duty, bypasses PI
+// ---------------------------------------------------------------------------
+static esp_err_t handler_set_duty(httpd_req_t *req)
+{
+    float duty = parse_float_param(req, "duty", -1.0f);
+    int motor = parse_motor_param(req);
+
+    if (duty < 0.0f || duty > 100.0f) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, "{\"ok\":false,\"msg\":\"duty must be 0-100\"}", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    xSemaphoreTake(s_cmd_mutex, portMAX_DELAY);
+    if (motor < 0) {
+        for (int i = 0; i < MOTOR_COUNT; i++) {
+            s_dc->axes[i].target_rpm = 0;  // disable PI
+            motor_driver_run(&s_dc->axes[i].motor);
+            motor_driver_set_duty(&s_dc->axes[i].motor, (int)duty);
+        }
+    } else {
+        s_dc->axes[motor].target_rpm = 0;  // disable PI
+        motor_driver_run(&s_dc->axes[motor].motor);
+        motor_driver_set_duty(&s_dc->axes[motor].motor, (int)duty);
+    }
+    xSemaphoreGive(s_cmd_mutex);
+
+    ESP_LOGI(TAG, "Raw duty=%d%% motor=%d", (int)duty, motor);
+    return send_ok(req, "duty set (raw)");
 }
 
 // ---------------------------------------------------------------------------
@@ -251,6 +290,118 @@ static esp_err_t handler_coast(httpd_req_t *req)
 }
 
 // ---------------------------------------------------------------------------
+// GET /api/reset?motor=<0|1|all>  — clear latched fault via COAST cycle
+// ---------------------------------------------------------------------------
+static esp_err_t handler_reset(httpd_req_t *req)
+{
+    int motor = parse_motor_param(req);
+
+    xSemaphoreTake(s_cmd_mutex, portMAX_DELAY);
+    if (motor < 0) {
+        for (int i = 0; i < MOTOR_COUNT; i++)
+            motor_driver_reset_fault(&s_dc->axes[i].motor);
+    } else {
+        motor_driver_reset_fault(&s_dc->axes[motor].motor);
+    }
+    xSemaphoreGive(s_cmd_mutex);
+
+    ESP_LOGI(TAG, "Fault reset (motor=%d)", motor);
+    return send_ok(req, "fault cleared");
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/wifi/status — WiFi STA status + mDNS hostname
+// ---------------------------------------------------------------------------
+static esp_err_t handler_wifi_status(httpd_req_t *req)
+{
+    const char *status_str = "disconnected";
+    switch (wifi_sta_get_status()) {
+        case WIFI_STA_CONNECTING: status_str = "connecting"; break;
+        case WIFI_STA_CONNECTED:  status_str = "connected";  break;
+        case WIFI_STA_FAILED:     status_str = "failed";     break;
+        default:                  status_str = "disconnected"; break;
+    }
+
+    char json[256];
+    snprintf(json, sizeof(json),
+        "{\"status\":\"%s\",\"ssid\":\"%s\",\"ip\":\"%s\",\"hostname\":\"%s\"}",
+        status_str,
+        wifi_sta_get_ssid(),
+        wifi_sta_get_ip(),
+        wifi_get_hostname());
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/wifi/scan — Start scan, or return results if done
+// ---------------------------------------------------------------------------
+static esp_err_t handler_wifi_scan(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+    if (!wifi_scan_is_done()) {
+        // Start a new scan if not already scanning
+        wifi_start_scan();
+        httpd_resp_send(req, "{\"scanning\":true}", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    // Return results
+    char *buf = malloc(2048);
+    if (!buf) {
+        httpd_resp_send(req, "{\"error\":\"no memory\"}", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    int len = wifi_get_scan_results_json(buf, 2048);
+    char *resp = malloc(len + 64);
+    if (resp) {
+        int rlen = snprintf(resp, len + 64, "{\"scanning\":false,\"networks\":%s}", buf);
+        httpd_resp_send(req, resp, rlen);
+        free(resp);
+    } else {
+        httpd_resp_send(req, "{\"error\":\"no memory\"}", HTTPD_RESP_USE_STRLEN);
+    }
+    free(buf);
+    return ESP_OK;
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/wifi/connect?ssid=<ssid>&pass=<password>
+// ---------------------------------------------------------------------------
+static esp_err_t handler_wifi_connect(httpd_req_t *req)
+{
+    char ssid[33] = "";
+    char pass[65] = "";
+
+    if (!parse_str_param(req, "ssid", ssid, sizeof(ssid)) || ssid[0] == '\0') {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, "{\"ok\":false,\"msg\":\"missing ssid param\"}", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    parse_str_param(req, "pass", pass, sizeof(pass));  // password is optional (open networks)
+
+    ESP_LOGI(TAG, "WiFi connect request: SSID=\"%s\"", ssid);
+    wifi_sta_connect(ssid, pass);
+
+    return send_ok(req, "connecting");
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/wifi/disconnect
+// ---------------------------------------------------------------------------
+static esp_err_t handler_wifi_disconnect(httpd_req_t *req)
+{
+    wifi_sta_disconnect_and_clear();
+    return send_ok(req, "disconnected");
+}
+
+// ---------------------------------------------------------------------------
 // Server init
 // ---------------------------------------------------------------------------
 
@@ -264,7 +415,7 @@ esp_err_t web_server_init(drive_controller_t *dc)
     }
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 10;
+    config.max_uri_handlers = 16;
     config.stack_size = 8192;
 
     httpd_handle_t server = NULL;
@@ -279,11 +430,17 @@ esp_err_t web_server_init(drive_controller_t *dc)
         { .uri = "/",           .method = HTTP_GET, .handler = handler_dashboard },
         { .uri = "/api/status", .method = HTTP_GET, .handler = handler_status },
         { .uri = "/api/set",    .method = HTTP_GET, .handler = handler_set_rpm },
+        { .uri = "/api/duty",   .method = HTTP_GET, .handler = handler_set_duty },
         { .uri = "/api/dir",    .method = HTTP_GET, .handler = handler_set_dir },
         { .uri = "/api/start",  .method = HTTP_GET, .handler = handler_start },
         { .uri = "/api/stop",   .method = HTTP_GET, .handler = handler_stop },
         { .uri = "/api/brake",  .method = HTTP_GET, .handler = handler_brake },
         { .uri = "/api/coast",  .method = HTTP_GET, .handler = handler_coast },
+        { .uri = "/api/reset",  .method = HTTP_GET, .handler = handler_reset },
+        { .uri = "/api/wifi/status",     .method = HTTP_GET, .handler = handler_wifi_status },
+        { .uri = "/api/wifi/scan",       .method = HTTP_GET, .handler = handler_wifi_scan },
+        { .uri = "/api/wifi/connect",    .method = HTTP_GET, .handler = handler_wifi_connect },
+        { .uri = "/api/wifi/disconnect", .method = HTTP_GET, .handler = handler_wifi_disconnect },
     };
 
     for (int i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {

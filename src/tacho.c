@@ -1,13 +1,40 @@
 #include "tacho.h"
-#include "driver/pulse_cnt.h"
+#include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_attr.h"
 
 static const char *TAG = "tacho";
 
-// Internal storage for PCNT unit handles (one per tacho instance)
-static pcnt_unit_handle_t s_pcnt_units[8] = {0};
+// ---------------------------------------------------------------------------
+// We support up to 8 tacho instances. The ISR needs to know which tacho_t
+// to update, so we keep a lookup table indexed by GPIO number.
+// (ESP32 GPIOs go up to 39, so a 40-entry table covers everything.)
+// ---------------------------------------------------------------------------
+static tacho_t *s_gpio_to_tacho[40] = {0};
+static bool s_isr_service_installed = false;
 
+// ---------------------------------------------------------------------------
+// GPIO ISR handler — runs in IRAM, must be fast
+// Records timestamp and computes period between consecutive edges.
+// ---------------------------------------------------------------------------
+static void IRAM_ATTR tacho_isr_handler(void *arg)
+{
+    tacho_t *t = (tacho_t *)arg;
+    int64_t now = esp_timer_get_time();
+    int64_t prev = t->last_edge_us;
+
+    if (prev > 0) {
+        t->edge_period_us = now - prev;
+    }
+
+    t->last_edge_us = now;
+    t->edge_count++;
+}
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
 esp_err_t tacho_init(tacho_t *tacho, int gpio, int pcnt_unit)
 {
     if (tacho->initialized) {
@@ -17,80 +44,82 @@ esp_err_t tacho_init(tacho_t *tacho, int gpio, int pcnt_unit)
 
     tacho->gpio = gpio;
     tacho->pcnt_unit = pcnt_unit;
-    tacho->pulse_count = 0;
-    tacho->last_sample_us = 0;
-    tacho->rpm = 0.0f;
-
-    // Configure PCNT unit
-    pcnt_unit_config_t unit_config = {
-        .high_limit = 32767,
-        .low_limit  = -1,      // We only count up
-    };
-    ESP_ERROR_CHECK(pcnt_new_unit(&unit_config, &s_pcnt_units[pcnt_unit]));
-
-    // Configure PCNT channel: count rising edges on the GPIO
-    pcnt_chan_config_t chan_config = {
-        .edge_gpio_num  = gpio,
-        .level_gpio_num = -1,   // No level signal
-    };
-    pcnt_channel_handle_t chan = NULL;
-    ESP_ERROR_CHECK(pcnt_new_channel(s_pcnt_units[pcnt_unit], &chan_config, &chan));
-
-    // Count +1 on rising edge, ignore falling edge
-    ESP_ERROR_CHECK(pcnt_channel_set_edge_action(chan,
-        PCNT_CHANNEL_EDGE_ACTION_INCREASE,  // Rising
-        PCNT_CHANNEL_EDGE_ACTION_HOLD));     // Falling
-
-    // No level-based action
-    ESP_ERROR_CHECK(pcnt_channel_set_level_action(chan,
-        PCNT_CHANNEL_LEVEL_ACTION_KEEP,
-        PCNT_CHANNEL_LEVEL_ACTION_KEEP));
-
-    // Enable glitch filter (1 µs — rejects noise spikes)
-    pcnt_glitch_filter_config_t filter_config = {
-        .max_glitch_ns = 1000,
-    };
-    ESP_ERROR_CHECK(pcnt_unit_set_glitch_filter(s_pcnt_units[pcnt_unit], &filter_config));
-
-    // Enable and start counting
-    ESP_ERROR_CHECK(pcnt_unit_enable(s_pcnt_units[pcnt_unit]));
-    ESP_ERROR_CHECK(pcnt_unit_clear_count(s_pcnt_units[pcnt_unit]));
-    ESP_ERROR_CHECK(pcnt_unit_start(s_pcnt_units[pcnt_unit]));
-
+    tacho->last_edge_us = 0;
+    tacho->edge_period_us = 0;
+    tacho->edge_count = 0;
     tacho->last_sample_us = esp_timer_get_time();
+    tacho->rpm = 0.0f;
+    tacho->rpm_raw = 0.0f;
+
+    // Install GPIO ISR service (once, shared across all tachos)
+    if (!s_isr_service_installed) {
+        ESP_ERROR_CHECK(gpio_install_isr_service(ESP_INTR_FLAG_IRAM));
+        s_isr_service_installed = true;
+    }
+
+    // Configure GPIO as input (IO34/35 are input-only, no internal pull-up)
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << gpio),
+        .mode         = GPIO_MODE_INPUT,
+        .pull_up_en   = GPIO_PULLUP_DISABLE,   // external 10k pull-up on PCB
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_ANYEDGE,      // trigger on both edges
+    };
+    ESP_ERROR_CHECK(gpio_config(&io_conf));
+
+    // Register ISR for this pin
+    s_gpio_to_tacho[gpio] = tacho;
+    ESP_ERROR_CHECK(gpio_isr_handler_add(gpio, tacho_isr_handler, tacho));
+
     tacho->initialized = true;
 
-    ESP_LOGI(TAG, "TACHO initialized: GPIO%d (PCNT unit %d, %d pulses/rev)",
-             gpio, pcnt_unit, TACHO_PULSES_PER_REV);
+    ESP_LOGI(TAG, "TACHO initialized: GPIO%d (period-based, %d edges/rev, ISR on ANYEDGE)",
+             gpio, TACHO_EDGES_PER_REV);
 
     return ESP_OK;
 }
 
+// ---------------------------------------------------------------------------
+// Update RPM — called from control loop at ~20 Hz
+// ---------------------------------------------------------------------------
 esp_err_t tacho_update_rpm(tacho_t *tacho)
 {
     if (!tacho->initialized) return ESP_ERR_INVALID_STATE;
 
-    int count = 0;
-    ESP_ERROR_CHECK(pcnt_unit_get_count(s_pcnt_units[tacho->pcnt_unit], &count));
-    ESP_ERROR_CHECK(pcnt_unit_clear_count(s_pcnt_units[tacho->pcnt_unit]));
+    int64_t now = esp_timer_get_time();
+    int64_t period = tacho->edge_period_us;
+    int64_t last_edge = tacho->last_edge_us;
+    uint32_t edges = tacho->edge_count;
 
-    int64_t now_us = esp_timer_get_time();
-    int64_t dt_us = now_us - tacho->last_sample_us;
-    tacho->last_sample_us = now_us;
+    // Reset edge counter for next interval (used for stall detection)
+    tacho->edge_count = 0;
 
-    if (dt_us <= 0) {
-        tacho->rpm = 0.0f;
+    // Check for timeout — no edges for too long means motor stopped
+    int64_t since_last_edge = now - last_edge;
+    if (last_edge == 0 || since_last_edge > TACHO_TIMEOUT_US || edges == 0) {
+        tacho->rpm_raw = 0.0f;
+        // Decay quickly toward zero
+        tacho->rpm *= 0.5f;
+        if (tacho->rpm < 0.5f) tacho->rpm = 0.0f;
         return ESP_OK;
     }
 
-    // RPM = (pulses / pulses_per_rev) / (dt_seconds / 60)
-    //     = (pulses * 60 * 1e6) / (pulses_per_rev * dt_us)
-    float revolutions = (float)count / (float)TACHO_PULSES_PER_REV;
-    float dt_sec = (float)dt_us / 1e6f;
-    tacho->rpm = (revolutions / dt_sec) * 60.0f;
+    // RPM from period between edges:
+    //   One edge = 1/TACHO_EDGES_PER_REV of a revolution
+    //   RPM = (1 / EDGES_PER_REV) / (period_us / 60e6)
+    //       = 60e6 / (period_us * EDGES_PER_REV)
+    float rpm_instant = 0.0f;
+    if (period > 0) {
+        rpm_instant = 60.0e6f / ((float)period * (float)TACHO_EDGES_PER_REV);
+    }
 
-    tacho->pulse_count = count;
+    tacho->rpm_raw = rpm_instant;
 
+    // EMA filter
+    tacho->rpm = TACHO_EMA_ALPHA * rpm_instant
+               + (1.0f - TACHO_EMA_ALPHA) * tacho->rpm;
+
+    tacho->last_sample_us = now;
     return ESP_OK;
 }
 

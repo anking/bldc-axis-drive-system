@@ -2,6 +2,8 @@
 #include "driver/ledc.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "motor_driver";
 
@@ -77,10 +79,25 @@ esp_err_t motor_driver_init(motor_driver_t *motor, const motor_driver_config_t *
     ESP_ERROR_CHECK(gpio_config(&coast_conf));
     gpio_set_level(config->gpio_coast, 0);  // Start in coast (safe default)
 
+    // Configure FF1 and FF2 as inputs with pull-ups (open-drain outputs from AMT49413)
+    if (config->gpio_ff1 >= 0) {
+        gpio_config_t ff_conf = {
+            .pin_bit_mask = (1ULL << config->gpio_ff1) | (1ULL << config->gpio_ff2),
+            .mode         = GPIO_MODE_INPUT,
+            .pull_up_en   = GPIO_PULLUP_ENABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type    = GPIO_INTR_DISABLE,
+        };
+        ESP_ERROR_CHECK(gpio_config(&ff_conf));
+    }
+    motor->ff1 = 1;
+    motor->ff2 = 1;
+
     motor->initialized = true;
-    ESP_LOGI(TAG, "Motor init: PWM=IO%d DIR=IO%d nBRAKE=IO%d COAST=IO%d (LEDC ch%d)",
+    ESP_LOGI(TAG, "Motor init: PWM=IO%d DIR=IO%d nBRAKE=IO%d COAST=IO%d FF1=IO%d FF2=IO%d (LEDC ch%d)",
              config->gpio_pwm, config->gpio_dir, config->gpio_brake,
-             config->gpio_coast, config->ledc_channel);
+             config->gpio_coast, config->gpio_ff1, config->gpio_ff2,
+             config->ledc_channel);
 
     return ESP_OK;
 }
@@ -156,4 +173,41 @@ esp_err_t motor_driver_stop(motor_driver_t *motor)
 
     ESP_LOGI(TAG, "Motor stopped (IO%d)", motor->config.gpio_pwm);
     return ESP_OK;
+}
+
+esp_err_t motor_driver_reset_fault(motor_driver_t *motor)
+{
+    if (!motor->initialized) return ESP_ERR_INVALID_STATE;
+
+    // Zero PWM first for safety
+    motor_driver_set_duty(motor, 0);
+
+    // Cycle COAST: disable outputs → wait → re-enable
+    // This clears the AMT49413 fault latch
+    gpio_set_level(motor->config.gpio_coast, 0);  // COAST LOW = outputs off
+    gpio_set_level(motor->config.gpio_brake, 1);  // Brake released
+    vTaskDelay(pdMS_TO_TICKS(20));                 // Hold 20ms
+
+    gpio_set_level(motor->config.gpio_coast, 1);  // COAST HIGH = outputs re-enabled
+
+    motor->braking = false;
+    motor->coasting = false;
+
+    ESP_LOGI(TAG, "Fault reset (COAST cycle) on IO%d", motor->config.gpio_pwm);
+    return ESP_OK;
+}
+
+const char *motor_driver_read_faults(motor_driver_t *motor)
+{
+    if (!motor->initialized || motor->config.gpio_ff1 < 0) {
+        return "N/A";
+    }
+
+    motor->ff1 = gpio_get_level(motor->config.gpio_ff1);
+    motor->ff2 = gpio_get_level(motor->config.gpio_ff2);
+
+    if (motor->ff1 && motor->ff2)   return "OK";
+    if (!motor->ff1 && motor->ff2)  return "SHORT/OC";
+    if (motor->ff1 && !motor->ff2)  return "OPEN/UV";
+    return "OVERTEMP";
 }

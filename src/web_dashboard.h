@@ -36,11 +36,23 @@ button:hover{opacity:.85}
 .tag-run{background:#166534;color:#4ade80}.tag-idle{background:#1e3a5f;color:#60a5fa}
 .tag-stall{background:#7f1d1d;color:#fca5a5}.tag-brake{background:#78350f;color:#fcd34d}
 .tag-coast{background:#1e3a5f;color:#93c5fd}
+.tag-fault{background:#7f1d1d;color:#fca5a5;animation:pulse .5s infinite}
+@keyframes pulse{50%{opacity:.6}}
+.fault-box{background:#1c1012;border:1px solid #7f1d1d;border-radius:4px;padding:6px 10px;margin-top:6px;font-size:.82em;color:#fca5a5}
 canvas{width:100%;height:200px;background:#12141c;border-radius:6px;border:1px solid #2a2d3a}
 .sys{display:flex;gap:16px;flex-wrap:wrap;font-size:.82em;color:#888}
 .sys span{color:#bbb}
 .legend{display:flex;gap:16px;font-size:.8em;margin-top:6px}
 .legend i{display:inline-block;width:12px;height:3px;border-radius:2px;margin-right:4px;vertical-align:middle}
+.wifi-net{display:flex;justify-content:space-between;align-items:center;padding:6px 8px;border-bottom:1px solid #2a2d3a;font-size:.85em;cursor:pointer;transition:background .15s}
+.wifi-net:hover{background:#22262f}
+.wifi-net .ssid{color:#e0e0e0;font-weight:500}
+.wifi-net .meta{color:#666;font-size:.8em}
+.wifi-rssi{width:24px;display:inline-block;text-align:right;margin-right:6px}
+.wifi-link{color:#7eb8ff;font-size:.82em;word-break:break-all}
+.wifi-link a{color:#7eb8ff;text-decoration:none}.wifi-link a:hover{text-decoration:underline}
+#wifi-pass-row{display:none;margin-top:8px}
+#wifi-pass-row input[type=text]{background:#12141c;border:1px solid #333;color:#fff;border-radius:4px;padding:6px 8px;width:180px;font-size:.9em}
 @media(max-width:600px){.g2{grid-template-columns:1fr}}
 </style>
 </head>
@@ -57,6 +69,31 @@ canvas{width:100%;height:200px;background:#12141c;border-radius:6px;border:1px s
  </div>
 </div>
 
+<!-- WiFi Settings -->
+<div class="card" style="margin-bottom:12px">
+ <h2>WiFi Settings <span class="tag tag-idle" id="wifi-tag">DISCONNECTED</span></h2>
+ <div class="row" style="margin-bottom:4px">
+  <div style="flex:1">
+   <label>STA Status</label>
+   <div id="wifi-sta-info" style="font-size:.85em;color:#bbb">Not connected</div>
+   <div class="wifi-link" id="wifi-mdns-link" style="margin-top:4px"></div>
+  </div>
+  <div>
+   <button class="btn-coast btn-sm" onclick="wifiScan()">Scan Networks</button>
+   <button class="btn-stop btn-sm" onclick="wifiDisconnect()" id="wifi-disc-btn" style="display:none">Disconnect</button>
+  </div>
+ </div>
+ <div id="wifi-scan-list" style="max-height:200px;overflow-y:auto;border:1px solid #2a2d3a;border-radius:4px;display:none"></div>
+ <div id="wifi-pass-row">
+  <div class="row">
+   <label style="display:inline;margin-right:4px">Password:</label>
+   <input type="text" id="wifi-pass" placeholder="Password (blank=open)">
+   <button class="btn-go btn-sm" onclick="wifiConnect()">Connect</button>
+   <button style="background:#666;color:#fff" class="btn-sm" onclick="wifiCancelConnect()">Cancel</button>
+  </div>
+ </div>
+</div>
+
 <!-- Motor Cards -->
 <div class="grid g2" id="motors"></div>
 
@@ -65,9 +102,15 @@ canvas{width:100%;height:200px;background:#12141c;border-radius:6px;border:1px s
  <h2>Controls</h2>
  <div class="row">
   <label style="display:inline;margin-right:4px">Target:</label>
-  <select id="ctrl-motor"><option value="all">All Motors</option></select>
+  <select id="ctrl-motor"><option value="0" selected>Motor 0</option><option value="all">All Motors</option></select>
   <input type="number" id="ctrl-rpm" value="0" min="0" max="2000" step="10" placeholder="RPM">
   <button class="btn-go" onclick="cmdSet()">Set RPM</button>
+ </div>
+ <div class="row">
+  <label style="display:inline;margin-right:4px">Raw Duty:</label>
+  <input type="range" id="ctrl-duty" min="0" max="100" value="0" style="width:120px">
+  <span id="ctrl-duty-val" style="min-width:35px;display:inline-block">0%</span>
+  <button class="btn-go btn-sm" onclick="cmdDuty()">Set Duty</button>
  </div>
  <div class="row">
   <button class="btn-dir" onclick="cmdDir('fwd')">Forward</button>
@@ -76,6 +119,7 @@ canvas{width:100%;height:200px;background:#12141c;border-radius:6px;border:1px s
   <button class="btn-stop" onclick="cmd('stop')">E-STOP</button>
   <button class="btn-brake" onclick="cmd('brake')">Brake</button>
   <button class="btn-coast" onclick="cmd('coast')">Coast</button>
+  <button style="background:#666;color:#fff" onclick="cmd('reset')">Reset Fault</button>
  </div>
 </div>
 
@@ -111,7 +155,8 @@ function initMotorCards(n){
    +'<div class="row"><div><label>RPM</label><div class="val" id="m'+i+'-rpm">0</div></div>'
    +'<div><label>Target</label><div class="val" id="m'+i+'-trpm" style="color:#9ba4b5">0</div></div>'
    +'<div><label>Duty</label><div class="val" id="m'+i+'-duty">0%</div></div>'
-   +'<div><label>Dir</label><div class="val" id="m'+i+'-dir" style="font-size:1em">FWD</div></div></div>';
+   +'<div><label>Dir</label><div class="val" id="m'+i+'-dir" style="font-size:1em">FWD</div></div></div>'
+   +'<div class="fault-box" id="m'+i+'-fault" style="display:none"></div>';
   mc.appendChild(c);
  }
  // legend
@@ -140,11 +185,19 @@ function updateUI(d){
   $(p+'-duty').textContent=m.duty_pct+'%';
   $(p+'-dir').textContent=m.dir==='fwd'?'FWD':'REV';
   let tag=$(p+'-tag');
-  if(m.stalled){tag.className='tag tag-stall';tag.textContent='STALL';}
-  else if(m.braking){tag.className='tag tag-brake';tag.textContent='BRAKE';}
-  else if(m.coasting){tag.className='tag tag-coast';tag.textContent='COAST';}
-  else if(m.rpm>0){tag.className='tag tag-run';tag.textContent='RUN';}
-  else{tag.className='tag tag-idle';tag.textContent='IDLE';}
+  let fb=$(p+'-fault');
+  if(m.fault && m.fault!=='OK'){
+   tag.className='tag tag-fault';tag.textContent='FAULT';
+   fb.style.display='block';
+   fb.innerHTML='&#9888; FF1='+m.ff1+' FF2='+m.ff2+' → <b>'+m.fault+'</b>';
+  } else {
+   fb.style.display='none';
+   if(m.stalled){tag.className='tag tag-stall';tag.textContent='STALL';}
+   else if(m.braking){tag.className='tag tag-brake';tag.textContent='BRAKE';}
+   else if(m.coasting){tag.className='tag tag-coast';tag.textContent='COAST';}
+   else if(m.rpm>0){tag.className='tag tag-run';tag.textContent='RUN';}
+   else{tag.className='tag tag-idle';tag.textContent='IDLE';}
+  }
   pt.rpm.push(m.rpm);
  }
  hist.push(pt);
@@ -221,6 +274,13 @@ function cmdSet(){
  if(m!=='all')q+='&motor='+m;
  fetch('/api/set'+q);
 }
+function cmdDuty(){
+ let m=$('ctrl-motor').value;
+ let d=$('ctrl-duty').value;
+ let q='?duty='+d;
+ if(m!=='all')q+='&motor='+m;
+ fetch('/api/duty'+q);
+}
 function cmdDir(d){
  let m=$('ctrl-motor').value;
  let q='?dir='+d;
@@ -234,6 +294,128 @@ window.addEventListener('resize',()=>{
  let cv=$('chart');cv.width=cv.offsetWidth;cv.height=200;
  drawChart();
 });
+
+$('ctrl-duty').oninput=function(){$('ctrl-duty-val').textContent=this.value+'%';};
+
+// --- WiFi STA management ---
+let wifiSelectedSSID='';
+
+function rssiIcon(rssi){
+ if(rssi>=-50) return '&#9679;&#9679;&#9679;';
+ if(rssi>=-70) return '&#9679;&#9679;&#9675;';
+ return '&#9679;&#9675;&#9675;';
+}
+
+async function wifiPollStatus(){
+ try{
+  let r=await fetch('/api/wifi/status');
+  let d=await r.json();
+  let tag=$('wifi-tag');
+  let info=$('wifi-sta-info');
+  let link=$('wifi-mdns-link');
+  let disc=$('wifi-disc-btn');
+
+  if(d.status==='connected'){
+   tag.className='tag tag-run';tag.textContent='CONNECTED';
+   info.innerHTML='Connected to <b>'+d.ssid+'</b> &mdash; IP: <b>'+d.ip+'</b>';
+   link.innerHTML='<a href="http://'+d.hostname+'.local" target="_blank">'+d.hostname+'.local</a>';
+   disc.style.display='inline-block';
+  } else if(d.status==='connecting'){
+   tag.className='tag tag-brake';tag.textContent='CONNECTING';
+   info.textContent='Connecting to '+d.ssid+'...';
+   link.innerHTML=d.hostname?'<span>'+d.hostname+'.local (waiting for IP)</span>':'';
+   disc.style.display='inline-block';
+  } else if(d.status==='failed'){
+   tag.className='tag tag-stall';tag.textContent='FAILED';
+   info.textContent='Connection failed';
+   link.innerHTML='';
+   disc.style.display='inline-block';
+  } else {
+   tag.className='tag tag-idle';tag.textContent='DISCONNECTED';
+   info.textContent='Not connected to any network';
+   link.innerHTML=d.hostname?'<span style="color:#666">'+d.hostname+'.local (AP only)</span>':'';
+   disc.style.display='none';
+  }
+ }catch(e){}
+}
+
+async function wifiScan(){
+ let list=$('wifi-scan-list');
+ list.style.display='block';
+ list.innerHTML='<div style="padding:10px;color:#888;text-align:center">Scanning...</div>';
+
+ // Trigger scan
+ await fetch('/api/wifi/scan');
+
+ // Poll for results (scan takes ~1-3s)
+ let tries=0;
+ let iv=setInterval(async()=>{
+  tries++;
+  try{
+   let r=await fetch('/api/wifi/scan');
+   let d=await r.json();
+   if(!d.scanning && d.networks){
+    clearInterval(iv);
+    if(d.networks.length===0){
+     list.innerHTML='<div style="padding:10px;color:#888;text-align:center">No networks found</div>';
+     return;
+    }
+    let html='';
+    for(let n of d.networks){
+     if(!n.ssid)continue;
+     html+='<div class="wifi-net" onclick="wifiSelectNet(\''+n.ssid.replace(/'/g,"\\'")+'\',\''+n.auth+'\')">'
+      +'<div><span class="wifi-rssi">'+rssiIcon(n.rssi)+'</span><span class="ssid">'+n.ssid+'</span></div>'
+      +'<div class="meta">'+n.auth+' &middot; Ch'+n.ch+' &middot; '+n.rssi+'dBm</div>'
+      +'</div>';
+    }
+    list.innerHTML=html;
+   }
+  }catch(e){}
+  if(tries>10){clearInterval(iv);list.innerHTML='<div style="padding:10px;color:#888">Scan timeout</div>';}
+ },1000);
+}
+
+function wifiSelectNet(ssid,auth){
+ wifiSelectedSSID=ssid;
+ if(auth==='OPEN'){
+  // Connect directly, no password needed
+  wifiConnect();
+ } else {
+  $('wifi-pass-row').style.display='block';
+  $('wifi-pass').value='';
+  $('wifi-pass').focus();
+  $('wifi-pass').placeholder='Password for '+ssid;
+ }
+}
+
+async function wifiConnect(){
+ let ssid=wifiSelectedSSID;
+ let pass=$('wifi-pass').value;
+ if(!ssid)return;
+
+ let q='?ssid='+encodeURIComponent(ssid);
+ if(pass) q+='&pass='+encodeURIComponent(pass);
+ await fetch('/api/wifi/connect'+q);
+
+ $('wifi-pass-row').style.display='none';
+ $('wifi-scan-list').style.display='none';
+ wifiSelectedSSID='';
+ wifiPollStatus();
+}
+
+function wifiCancelConnect(){
+ $('wifi-pass-row').style.display='none';
+ wifiSelectedSSID='';
+}
+
+async function wifiDisconnect(){
+ await fetch('/api/wifi/disconnect');
+ wifiPollStatus();
+}
+
+// Poll WiFi status every 3s
+setInterval(wifiPollStatus,3000);
+wifiPollStatus();
 
 setInterval(poll,POLL_MS);
 poll();

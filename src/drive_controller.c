@@ -7,10 +7,10 @@
 
 static const char *TAG = "drive_ctrl";
 
-// Motor configurations: {pwm_gpio, dir_gpio, brake_gpio, coast_gpio, ledc_channel, ledc_timer}
+// Motor configurations: {pwm, dir, brake, coast, ff1, ff2, ledc_ch, ledc_timer}
 static const motor_driver_config_t s_motor_configs[MOTOR_COUNT] = {
-    { M1_GPIO_PWM, M1_GPIO_DIR, M1_GPIO_BRAKE, M1_GPIO_COAST, 0, 0 },  // M1 - timer 0
-    { M2_GPIO_PWM, M2_GPIO_DIR, M2_GPIO_BRAKE, M2_GPIO_COAST, 1, 0 },  // M2 - timer 0
+    { M1_GPIO_PWM, M1_GPIO_DIR, M1_GPIO_BRAKE, M1_GPIO_COAST, M1_GPIO_FF1, M1_GPIO_FF2, 0, 0 },
+    { M2_GPIO_PWM, M2_GPIO_DIR, M2_GPIO_BRAKE, M2_GPIO_COAST, M2_GPIO_FF1, M2_GPIO_FF2, 1, 0 },
 };
 
 // TACHO GPIOs indexed by motor
